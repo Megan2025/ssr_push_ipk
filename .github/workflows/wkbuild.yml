@@ -1,4 +1,4 @@
-name: Start build ssr+  two platforms by wk
+name: build ssr+ arm_a53+x86
 
 on:
  workflow_dispatch:

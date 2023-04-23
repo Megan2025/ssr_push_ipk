@@ -1,4 +1,4 @@
-name: build ssr+  aarch64_generic
+name: build ssr+  arm_aarch64_generic
 
 on:
  workflow_dispatch:

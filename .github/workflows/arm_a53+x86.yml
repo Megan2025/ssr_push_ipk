@@ -12,61 +12,41 @@ jobs:
       matrix:
         include:
           - arch: aarch64_cortex-a53
-            target: mvebu-cortexa53
-
           - arch: x86_64
-            target: x86-64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Configure safe directory
-        run: git config --global --add safe.directory "*"
-
-      - name: Determine packages
+      - name: Setup custom feed for SSR+
         run: |
-          BRANCH="master"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-          
-          # 手动触发时默认构建 luci-app-ssr-plus
-          PACKAGES="luci-app-ssr-plus"
-          echo "Building $PACKAGES"
-          echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
+          mkdir -p custom_feed
+          # 拉取包含 luci-app-ssr-plus 的完整源码
+          git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
       - name: Build
         uses: immortalwrt/gh-action-sdk@v4.1
         env:
-          ARCH: ${{ matrix.arch }}-${{ env.BRANCH }}
-          FEEDNAME: packages_ci
-          PACKAGES: ${{ env.PACKAGES }}
+          ARCH: ${{ matrix.arch }}-openwrt-23.05
+          FEEDNAME: custom_feed
+          PACKAGES: luci-app-ssr-plus
+          V: s
 
       - name: Move created packages to project dir
         run: |
-          mkdir -p output
-          find bin/packages/ -type f -name "*.ipk" -exec cp {} . \; || true
+          find bin/packages/ -type f -name "*.ipk" -exec cp -f {} . \; || true
 
       - name: Collect metadata
         run: |
-          MERGE_ID=$(git rev-parse --short HEAD)
-          echo "MERGE_ID=$MERGE_ID" >> $GITHUB_ENV
-          echo "ARCHIVE_NAME=${{ matrix.arch }}-$MERGE_ID" >> $GITHUB_ENV
+          COMMIT_ID=$(git rev-parse --short HEAD)
+          echo "ARCHIVE_NAME=${{ matrix.arch }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
           cat << _EOF_ > PKG-INFO
-          Metadata-Version: 2.1
           Name: ${{ env.ARCHIVE_NAME }}
-          Version: ${{ env.BRANCH }}
-          Author: ${{ github.actor }}
-          Summary: ${{ env.PACKAGES }}
           Platform: ${{ matrix.arch }}
-          Packages built for ImmortalWrt ${{ env.BRANCH }} on ${{ matrix.arch }} at commit ${{ env.MERGE_ID }}.
-          Modified packages:
-            ${{ env.PACKAGES }}
-
+          Package: luci-app-ssr-plus
           Full file listing:
           _EOF_
           ls -al *.ipk >> PKG-INFO 2>/dev/null || true

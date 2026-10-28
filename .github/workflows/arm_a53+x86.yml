@@ -13,41 +13,46 @@ jobs:
         include:
           - arch: aarch64_generic
             out_name: aarch64_cortex-a53
+            target: armsr/armv8
           - arch: x86_64
             out_name: x86_64
+            target: x86/64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Maximize build space & Setup Swap
+      - name: Free Disk Space & Setup Swap
         run: |
           sudo swapoff -a || true
           sudo rm -f /mnt/swapfile /swapfile
-          sudo fallocate -l 4G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096
+          sudo fallocate -l 6G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=6144
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
 
-      - name: Setup custom feed for SSR+
+      - name: Prepare feeds and dependencies
         run: |
           mkdir -p custom_feed
+          # 克隆 helloworld 源
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
+          
+          # 针对 golang 依赖：直接使用 openwrt 官方更新后的 golang feed，避免 golang-bootstrap 编译崩溃
+          git clone --depth=1 https://github.com/sbwml/packages_lang_golang.git custom_feed/golang
 
       - name: Build
-        uses: immortalwrt/gh-action-sdk@master
+        uses: immortalwrt/gh-action-sdk@v4.1
         env:
-          ARCH: ${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}-openwrt-23.05
           FEEDNAME: custom_feed
           PACKAGES: luci-app-ssr-plus
+          NO_DEFCONFIG: 1
           V: s
 
       - name: Move created packages to clean dist dir
         run: |
-          # 1. 创建干净的独立打包目录
           mkdir -p dist
-          
-          # 2. 严格按白名单挑选：只提取 SSR+ 主体、语言包以及必备核心代理组件，排除 -src 源码包与底层 python 依赖
+          # 严格筛选目标 IPK，杜绝无关底层包
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
             grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
             xargs -I {} cp -f {} dist/ || true
@@ -72,7 +77,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}-packages
-          # 3. 关键点：只上传 dist 文件夹内部的内容，彻底隔绝外部 200 多个垃圾包
           path: |
             dist/*.ipk
             dist/PKG-INFO

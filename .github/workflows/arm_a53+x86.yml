@@ -5,18 +5,18 @@ on:
 
 jobs:
   build:
-    name: Test ${{ matrix.arch }}
+    name: Build ${{ matrix.arch_name }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64_generic
-            out_name: aarch64_cortex-a53
-            target: armsr/armv8
-          - arch: x86_64
-            out_name: x86_64
-            target: x86/64
+          - arch_name: aarch64_cortex-a53
+            target_arch: aarch64
+            sdk_url: "https://archive.openwrt.org/releases/23.05.4/targets/armsr/armv8/openwrt-sdk-23.05.4-armsr-armv8_gcc-12.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          - arch_name: x86_64
+            target_arch: x86_64
+            sdk_url: "https://archive.openwrt.org/releases/23.05.4/targets/x86/64/openwrt-sdk-23.05.4-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.zst"
 
     steps:
       - name: Checkout
@@ -31,42 +31,59 @@ jobs:
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
 
-      - name: Prepare feeds and dependencies
+      - name: Install Build Dependencies
         run: |
-          mkdir -p custom_feed
-          # 克隆 helloworld 源
-          git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
+          sudo -E apt-get update
+          sudo -E apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev zstd
+
+      - name: Download & Extract Official OpenWrt SDK
+        run: |
+          echo "=== 正在下载官方标准 SDK ==="
+          wget -qO sdk.tar.zst "${{ matrix.sdk_url }}"
+          mkdir -p sdk
+          tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          rm -f sdk.tar.zst
+
+      - name: Setup Feeds & Clone SSR+
+        working-directory: sdk
+        run: |
+          # 配置 feeds
+          cp feeds.conf.default feeds.conf
+          echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf
           
-          # 针对 golang 依赖：直接使用 openwrt 官方更新后的 golang feed，避免 golang-bootstrap 编译崩溃
-          git clone --depth=1 https://github.com/sbwml/packages_lang_golang.git custom_feed/golang
+          # 更新并安装源
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -p helloworld
 
-      - name: Build
-        uses: immortalwrt/gh-action-sdk@v4.1
-        env:
-          ARCH: ${{ matrix.arch }}-openwrt-23.05
-          FEEDNAME: custom_feed
-          PACKAGES: luci-app-ssr-plus
-          NO_DEFCONFIG: 1
-          V: s
+      - name: Compile Packages
+        working-directory: sdk
+        run: |
+          # 生成配置文件
+          make defconfig
+          
+          # 仅编译 SSR+ 及其配套组件
+          echo "=== 开始编译 ==="
+          make package/helloworld/luci-app-ssr-plus/compile -j$(nproc) V=s || make package/helloworld/luci-app-ssr-plus/compile -j1 V=s
 
-      - name: Move created packages to clean dist dir
+      - name: Filter & Move Packages to dist
         run: |
           mkdir -p dist
-          # 严格筛选目标 IPK，杜绝无关底层包
-          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
-            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
+          # 严格筛选：提取 ssr-plus 主插件、语言包及核心支持组件，杜绝 200 多个无用系统底层包
+          find sdk/bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
+            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks|simple-obfs|tcping|xray|v2ray|trojan|lua-neturl|microsocks)" | \
             xargs -I {} cp -f {} dist/ || true
 
       - name: Collect metadata
         run: |
           COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
-          echo "ARCHIVE_NAME=${{ matrix.out_name }}-$COMMIT_ID" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${{ matrix.arch_name }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
           cat << _EOF_ > dist/PKG-INFO
           Name: ${{ env.ARCHIVE_NAME }}
-          Platform: ${{ matrix.out_name }}
+          Platform: ${{ matrix.arch_name }}
           Package: luci-app-ssr-plus
           Full file listing:
           _EOF_

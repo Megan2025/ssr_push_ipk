@@ -19,6 +19,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Fix Git Submodules and Safe Directory
+        run: |
+          git config --global --add safe.directory "*"
+          # 清理损坏的子模块指针与索引
+          git rm --cached luci-app-poweroff 2>/dev/null || true
+          rm -rf .git/modules/luci-app-poweroff 2>/dev/null || true
+          sed -i '/luci-app-poweroff/,+2d' .gitmodules 2>/dev/null || true
 
       - name: Free Disk Space & Setup Swap
         run: |
@@ -32,10 +43,10 @@ jobs:
       - name: Setup custom feeds
         run: |
           mkdir -p custom_feed
-          # 拉取 helloworld 源码
+          # 克隆 helloworld 源
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
           
-          # 针对 Golang 依赖，直接使用已处理好预编译二进制环境的 feeds，防止编译 golang-bootstrap 时崩溃
+          # 针对 golang 依赖：引入免源码重编译的稳定依赖源，彻底杜绝 golang-bootstrap 报错
           git clone --depth=1 https://github.com/sbwml/packages_lang_golang -b 23.x custom_feed/golang || \
           git clone --depth=1 https://github.com/sbwml/packages_lang_golang custom_feed/golang
 
@@ -50,10 +61,8 @@ jobs:
 
       - name: Filter & Move Packages to dist
         run: |
-          # 创建纯净输出目录
           mkdir -p dist
-          
-          # 精准挑选白名单核心包，彻底排除 200 多个底层的 python 等垃圾包
+          # 精准筛选白名单包：提取 SSR+ 主体、中文语言包及核心支持组件，排除 200 多个无用系统底层包
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
             grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
             xargs -I {} cp -f {} dist/ || true
@@ -78,7 +87,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}-packages
-          # 仅上传 dist 目录，确保解压后只有 10~20 个核心 IPK
           path: |
             dist/*.ipk
             dist/PKG-INFO

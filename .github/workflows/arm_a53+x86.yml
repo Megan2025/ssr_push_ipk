@@ -5,16 +5,16 @@ on:
 
 jobs:
   build:
-    name: Test ${{ matrix.arch_name }}
+    name: Test ${{ matrix.arch }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch_name: aarch64_cortex-a53
-            sdk_arch: aarch64_generic-openwrt-23.05
-          - arch_name: x86_64
-            sdk_arch: x86_64-openwrt-23.05
+          - arch: aarch64_generic
+            out_name: aarch64_cortex-a53
+          - arch: x86_64
+            out_name: x86_64
 
     steps:
       - name: Checkout
@@ -24,11 +24,10 @@ jobs:
         run: |
           sudo swapoff -a || true
           sudo rm -f /mnt/swapfile /swapfile
-          sudo fallocate -l 6G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=6144
+          sudo fallocate -l 4G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          free -h
 
       - name: Setup custom feed for SSR+
         run: |
@@ -36,38 +35,44 @@ jobs:
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
       - name: Build
-        uses: immortalwrt/gh-action-sdk@v4.1
+        uses: immortalwrt/gh-action-sdk@master
         env:
-          ARCH: ${{ matrix.sdk_arch }}
+          ARCH: ${{ matrix.arch }}
           FEEDNAME: custom_feed
           PACKAGES: luci-app-ssr-plus
           V: s
 
-      - name: Move created packages to project dir
+      - name: Move created packages to clean dist dir
         run: |
-          # 仅收集 SSR+ 及其配套组件，排除源码包与无用依赖
-          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | xargs -I {} cp -f {} . || true
+          # 1. 创建干净的独立打包目录
+          mkdir -p dist
+          
+          # 2. 严格按白名单挑选：只提取 SSR+ 主体、语言包以及必备核心代理组件，排除 -src 源码包与底层 python 依赖
+          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
+            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
+            xargs -I {} cp -f {} dist/ || true
 
       - name: Collect metadata
         run: |
           COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
-          echo "ARCHIVE_NAME=${{ matrix.arch_name }}-$COMMIT_ID" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${{ matrix.out_name }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
-          cat << _EOF_ > PKG-INFO
+          cat << _EOF_ > dist/PKG-INFO
           Name: ${{ env.ARCHIVE_NAME }}
-          Platform: ${{ matrix.arch_name }}
+          Platform: ${{ matrix.out_name }}
           Package: luci-app-ssr-plus
           Full file listing:
           _EOF_
-          ls -al *.ipk >> PKG-INFO 2>/dev/null || true
-          cat PKG-INFO
+          ls -al dist/*.ipk >> dist/PKG-INFO 2>/dev/null || true
+          cat dist/PKG-INFO
 
       - name: Store packages
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}-packages
+          # 3. 关键点：只上传 dist 文件夹内部的内容，彻底隔绝外部 200 多个垃圾包
           path: |
-            *.ipk
-            PKG-INFO
+            dist/*.ipk
+            dist/PKG-INFO

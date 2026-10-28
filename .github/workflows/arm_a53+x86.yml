@@ -1,12 +1,12 @@
 name: build ssr+ arm_a53+x86
 
 on:
- workflow_dispatch:
- 
+  workflow_dispatch:
+
 jobs:
   build:
     name: Test ${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -18,36 +18,21 @@ jobs:
             target: x86-64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine branch name
+      - name: Configure safe directory
+        run: git config --global --add safe.directory "*"
+
+      - name: Determine packages
         run: |
           BRANCH="master"
-          echo "Building for $BRANCH"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-
-      - name: Determine changed packages
-        run: |
-          # only detect packages with changes
-          PKG_ROOTS=$(find . -name Makefile | \
-            grep -v ".*/src/Makefile" | \
-            sed -e 's@./\(.*\)/Makefile@\1/@')
-          CHANGES=$(git diff --diff-filter=d --name-only origin/$BRANCH)
-
-          for ROOT in $PKG_ROOTS; do
-            for CHANGE in $CHANGES; do
-              if [[ "$CHANGE" == "$ROOT"* ]]; then
-                PACKAGES+=$(echo "$ROOT" | sed -e 's@\(.*\)/@\1 @')
-                break
-              fi
-            done
-          done
-          # fallback to test packages if nothing explicitly changes this is
-          # should run if other mechanics in packages.git changed
-          PACKAGES="${PACKAGES:-luci-app-ssr-plus}"
-
+          
+          # 手动触发时默认构建 luci-app-ssr-plus
+          PACKAGES="luci-app-ssr-plus"
           echo "Building $PACKAGES"
           echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
 
@@ -56,49 +41,41 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}-${{ env.BRANCH }}
           FEEDNAME: packages_ci
+          PACKAGES: ${{ env.PACKAGES }}
 
       - name: Move created packages to project dir
-        run: cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk . || true
+        run: |
+          mkdir -p output
+          find bin/packages/ -type f -name "*.ipk" -exec cp {} . \; || true
 
       - name: Collect metadata
         run: |
           MERGE_ID=$(git rev-parse --short HEAD)
           echo "MERGE_ID=$MERGE_ID" >> $GITHUB_ENV
-          echo "BASE_ID=$(git rev-parse --short HEAD^1)" >> $GITHUB_ENV
-          echo "HEAD_ID=$(git rev-parse --short HEAD^2)" >> $GITHUB_ENV
-          PRNUMBER=${GITHUB_REF_NAME%/merge}
-          echo "PRNUMBER=$PRNUMBER" >> $GITHUB_ENV
-          echo "ARCHIVE_NAME=${{matrix.arch}}-PR$PRNUMBER-$MERGE_ID" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${{ matrix.arch }}-$MERGE_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
           cat << _EOF_ > PKG-INFO
           Metadata-Version: 2.1
-          Name: ${{env.ARCHIVE_NAME}}
-          Version: $BRANCH
-          Author: $GITHUB_ACTOR
-          Home-page: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PRNUMBER
-          Download-URL: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          Summary: $PACKAGES
+          Name: ${{ env.ARCHIVE_NAME }}
+          Version: ${{ env.BRANCH }}
+          Author: ${{ github.actor }}
+          Summary: ${{ env.PACKAGES }}
           Platform: ${{ matrix.arch }}
-          Packages for ImmortalWrt $BRANCH running on ${{matrix.arch}}, built from PR $PRNUMBER
-          at commit $HEAD_ID, against $BRANCH at commit $BASE_ID, with merge SHA $MERGE_ID.
+          Packages built for ImmortalWrt ${{ env.BRANCH }} on ${{ matrix.arch }} at commit ${{ env.MERGE_ID }}.
           Modified packages:
+            ${{ env.PACKAGES }}
+
+          Full file listing:
           _EOF_
-          for p in $PACKAGES
-          do
-            echo "  "$p >> PKG-INFO
-          done
-          echo >> PKG-INFO
-          echo Full file listing: >> PKG-INFO
-          ls -al *.ipk >> PKG-INFO || true
+          ls -al *.ipk >> PKG-INFO 2>/dev/null || true
           cat PKG-INFO
 
       - name: Store packages
         uses: actions/upload-artifact@v4
         with:
-          name: ${{env.ARCHIVE_NAME}}-packages
+          name: ${{ env.ARCHIVE_NAME }}-packages
           path: |
             *.ipk
             PKG-INFO
-

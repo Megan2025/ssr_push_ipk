@@ -5,47 +5,59 @@ on:
 
 jobs:
   build:
-    name: Test ${{ matrix.arch }}
+    name: Test ${{ matrix.arch_name }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64_cortex-a53
-          - arch: x86_64
+          - arch_name: aarch64_cortex-a53
+            sdk_arch: aarch64_generic-openwrt-23.05
+          - arch_name: x86_64
+            sdk_arch: x86_64-openwrt-23.05
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Maximize build space & Setup Swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo fallocate -l 6G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=6144
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       - name: Setup custom feed for SSR+
         run: |
           mkdir -p custom_feed
-          # 拉取包含 luci-app-ssr-plus 的完整源码
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
       - name: Build
         uses: immortalwrt/gh-action-sdk@v4.1
         env:
-          ARCH: ${{ matrix.arch }}-openwrt-23.05
+          ARCH: ${{ matrix.sdk_arch }}
           FEEDNAME: custom_feed
           PACKAGES: luci-app-ssr-plus
           V: s
 
       - name: Move created packages to project dir
         run: |
-          find bin/packages/ -type f -name "*.ipk" -exec cp -f {} . \; || true
+          # 仅收集 SSR+ 及其配套组件，排除源码包与无用依赖
+          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | xargs -I {} cp -f {} . || true
 
       - name: Collect metadata
         run: |
-          COMMIT_ID=$(git rev-parse --short HEAD)
-          echo "ARCHIVE_NAME=${{ matrix.arch }}-$COMMIT_ID" >> $GITHUB_ENV
+          COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
+          echo "ARCHIVE_NAME=${{ matrix.arch_name }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
           cat << _EOF_ > PKG-INFO
           Name: ${{ env.ARCHIVE_NAME }}
-          Platform: ${{ matrix.arch }}
+          Platform: ${{ matrix.arch_name }}
           Package: luci-app-ssr-plus
           Full file listing:
           _EOF_

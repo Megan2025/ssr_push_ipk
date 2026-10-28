@@ -1,116 +1,62 @@
-# SPDX-License-Identifier: GPL-3.0-only
-#
-# Copyright (C) 2021 ImmortalWrt.org
+name: build ssr+ arm_a53+x86
 
-include $(TOPDIR)/rules.mk
+on:
+  workflow_dispatch:
 
-PKG_NAME:=naiveproxy
-PKG_VERSION:=112.0.5615.49-1
-PKG_RELEASE:=1
+jobs:
+  build:
+    name: Test ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64_cortex-a53
+          - arch: x86_64
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/klzgrad/naiveproxy/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=a19110347a5dedd800f3978c7204e9a5e1b1a26935ead61086547807380610da
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-PKG_LICENSE:=BSD 3-Clause
-PKG_LICENSE_FILES:=LICENSE
-PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
+      - name: Setup custom feed for SSR+
+        run: |
+          mkdir -p custom_feed
+          # 拉取包含 luci-app-ssr-plus 的完整源码
+          git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
-PKG_BUILD_DEPENDS:=gn/host
-ifneq ($(wildcard $(TOPDIR)/feeds/packages/devel/ninja/ninja.mk),)
-PKG_BUILD_DEPENDS+= ninja/host
-endif
-PKG_BUILD_PARALLEL:=1
-PKG_USE_MIPS16:=0
+      - name: Build
+        uses: immortalwrt/gh-action-sdk@v4.1
+        env:
+          ARCH: ${{ matrix.arch }}-openwrt-23.05
+          FEEDNAME: custom_feed
+          PACKAGES: luci-app-ssr-plus
+          V: s
 
-ifneq ($(CONFIG_CPU_TYPE)," ")
-  CPU_TYPE:=$(word 1, $(subst +," ,$(CONFIG_CPU_TYPE)))
-  CPU_SUBTYPE:=$(word 2, $(subst +, ",$(CONFIG_CPU_TYPE)))
-  ifeq ($(CPU_SUBTYPE),)
-    CPU_SUBTYPE:=""
-  endif
-else
-  CPU_TYPE:=""
-  CPU_SUBTYPE:=""
-endif
+      - name: Move created packages to project dir
+        run: |
+          # 严格筛选：排除 -src 源码包，只复制 SSR+ 及其配套的核心插件与协议组件
+          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | xargs -I {} cp -f {} . || true
 
-include $(INCLUDE_DIR)/package.mk
+      - name: Collect metadata
+        run: |
+          COMMIT_ID=$(git rev-parse --short HEAD)
+          echo "ARCHIVE_NAME=${{ matrix.arch }}-$COMMIT_ID" >> $GITHUB_ENV
 
-define Package/naiveproxy
-  SECTION:=net
-  CATEGORY:=Network
-  SUBMENU:=Web Servers/Proxies
-  TITLE:=Make a fortune quietly
-  URL:=https://github.com/klzgrad/naiveproxy
-  DEPENDS:=@!(arc||armeb||mips||mips64||powerpc||TARGET_gemini) +libatomic
-endef
+      - name: Generate metadata
+        run: |
+          cat << _EOF_ > PKG-INFO
+          Name: ${{ env.ARCHIVE_NAME }}
+          Platform: ${{ matrix.arch }}
+          Package: luci-app-ssr-plus
+          Full file listing:
+          _EOF_
+          ls -al *.ipk >> PKG-INFO 2>/dev/null || true
+          cat PKG-INFO
 
-define Package/naiveproxy/description
-  NaïveProxy uses Chrome's network stack to camouflage traffic with strong
-  censorship resistance and low detectability. Reusing Chrome's stack also
-  ensures best practices in performance and security.
-endef
-
-ifneq ($(CONFIG_CCACHE),)
-  export CCACHE_SLOPPINESS=time_macros
-  export CCACHE_BASEDIR=$(PKG_BUILD_DIR)/src
-  export CCACHE_CPP2=yes
-  export naive_ccache_flags=cc_wrapper="$(CCACHE)"
-endif
-
-CLANG_VER:=17-init-2387-g68e81d7e-1
-CLANG_FILE:=clang-llvmorg-$(CLANG_VER).tgz
-define Download/CLANG
-	URL:=https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64
-	URL_FILE:=$(CLANG_FILE)
-	FILE:=$(CLANG_FILE)
-	HASH:=6335f2e1f35bb235b8fe610559bbf97e630c4e50662a31b6e70226c2f4b0c290
-endef
-
-PGO_VER:=5615-1679995307-0baae343d55c36a01b20eb4c600fca3ba7e0825e
-PGO_FILE:=chrome-linux-$(PGO_VER).profdata
-define Download/PGO_PROF
-	URL:=https://storage.googleapis.com/chromium-optimization-profiles/pgo_profiles
-	URL_FILE:=$(PGO_FILE)
-	FILE:=$(PGO_FILE)
-	HASH:=06a181474ca4b34f53dec1d2993e97895665cad85e5c4456ae94ed0c1d10e3ec
-endef
-
-define Build/Prepare
-	$(call Build/Prepare/Default)
-
-	( \
-		pushd $(PKG_BUILD_DIR)/src ; \
-		mkdir -p "chrome/build/pgo_profiles" ; \
-		$(CP) "$(DL_DIR)/$(PGO_FILE)" "chrome/build/pgo_profiles" ; \
-		mkdir -p "third_party/llvm-build/Release+Asserts" ; \
-		$(TAR) -xzf "$(DL_DIR)/$(CLANG_FILE)" -C "third_party/llvm-build/Release+Asserts" ; \
-		echo -e "llvmorg-$(CLANG_VER)" > "third_party/llvm-build/Release+Asserts/cr_build_revision" ; \
-		popd ; \
-	)
-endef
-
-define Build/Configure
-	( \
-		pushd "$(PKG_BUILD_DIR)/src" ; \
-		. ../init_env.sh "$(ARCH)" $(CPU_TYPE) $(CPU_SUBTYPE) "$(TOOLCHAIN_DIR)" ; \
-		export naive_flags+=" $$$${naive_ccache_flags}" ; \
-		mkdir -p "out" ; \
-		gn gen "out/Release" --args="$$$${naive_flags}" --script-executable="$(PYTHON)" ; \
-		popd ; \
-	)
-endef
-
-define Build/Compile
-	ninja -C "$(PKG_BUILD_DIR)/src/out/Release" naive
-endef
-
-define Package/naiveproxy/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/out/Release/naive $(1)/usr/bin/naive
-endef
-
-$(eval $(call Download,CLANG))
-$(eval $(call Download,PGO_PROF))
-
-$(eval $(call BuildPackage,naiveproxy))
+      - name: Store packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}-packages
+          path: |
+            *.ipk
+            PKG-INFO

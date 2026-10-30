@@ -5,57 +5,88 @@ on:
 
 jobs:
   build:
-    name: Test ${{ matrix.arch }}
+    name: Build ${{ matrix.arch_name }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64_cortex-a53
-          - arch: x86_64
+          - arch_name: aarch64_cortex-a53
+            arch: aarch64_generic-openwrt-23.05
+          - arch_name: x86_64
+            arch: x86_64-openwrt-23.05
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
 
-      - name: Setup custom feed for SSR+
+      - name: Fix Git Submodules and Safe Directory
+        run: |
+          git config --global --add safe.directory "*"
+          # 清理损坏的子模块指针与索引
+          git rm --cached luci-app-poweroff 2>/dev/null || true
+          rm -rf .git/modules/luci-app-poweroff 2>/dev/null || true
+          sed -i '/luci-app-poweroff/,+2d' .gitmodules 2>/dev/null || true
+
+      - name: Free Disk Space & Setup Swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo fallocate -l 6G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=6144
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+
+      - name: Setup custom feeds
         run: |
           mkdir -p custom_feed
-          # 拉取包含 luci-app-ssr-plus 的完整源码
+          # 克隆 helloworld 源
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
+          
+          # 针对 golang 依赖：引入免源码重编译的稳定依赖源，彻底杜绝 golang-bootstrap 报错
+          git clone --depth=1 https://github.com/sbwml/packages_lang_golang -b 23.x custom_feed/golang || \
+          git clone --depth=1 https://github.com/sbwml/packages_lang_golang custom_feed/golang
 
-      - name: Build
+      - name: Build with ImmortalWrt SDK
         uses: immortalwrt/gh-action-sdk@v4.1
         env:
-          ARCH: ${{ matrix.arch }}-openwrt-23.05
+          ARCH: ${{ matrix.arch }}
           FEEDNAME: custom_feed
           PACKAGES: luci-app-ssr-plus
+          NO_DEFCONFIG: 1
           V: s
 
-      - name: Move created packages to project dir
+      - name: Filter & Move Packages to dist
         run: |
-          find bin/packages/ -type f -name "*.ipk" -exec cp -f {} . \; || true
+          mkdir -p dist
+          # 精准筛选白名单包：提取 SSR+ 主体、中文语言包及核心支持组件，排除 200 多个无用系统底层包
+          find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
+            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
+            xargs -I {} cp -f {} dist/ || true
 
       - name: Collect metadata
         run: |
-          COMMIT_ID=$(git rev-parse --short HEAD)
-          echo "ARCHIVE_NAME=${{ matrix.arch }}-$COMMIT_ID" >> $GITHUB_ENV
+          COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
+          echo "ARCHIVE_NAME=${{ matrix.arch_name }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
-          cat << _EOF_ > PKG-INFO
+          cat << _EOF_ > dist/PKG-INFO
           Name: ${{ env.ARCHIVE_NAME }}
-          Platform: ${{ matrix.arch }}
+          Platform: ${{ matrix.arch_name }}
           Package: luci-app-ssr-plus
           Full file listing:
           _EOF_
-          ls -al *.ipk >> PKG-INFO 2>/dev/null || true
-          cat PKG-INFO
+          ls -al dist/*.ipk >> dist/PKG-INFO 2>/dev/null || true
+          cat dist/PKG-INFO
 
       - name: Store packages
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}-packages
           path: |
-            *.ipk
-            PKG-INFO
+            dist/*.ipk
+            dist/PKG-INFO

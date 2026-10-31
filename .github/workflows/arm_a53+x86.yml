@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
 
       - name: Setup custom feed for SSR+
         run: |
@@ -41,28 +44,27 @@ jobs:
         run: |
           mkdir -p dist
 
-          # 1. 提取 SDK 本地编译出的界面与 C 核心
+          # 1. 提取 SDK 本地编译好的 SSR+ 面板及配套 C 核心
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
             grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|microsocks|lua-neturl|tcping)" | \
             xargs -I {} cp -f {} dist/ || true
 
-          # 2. 从官方软件源同步预编译的 shadowsocks-rust, shadowsocksr, simple-obfs 等配套核心
+          # 2. 从官方源拉取预编译好的配套扩展
           OPKG_BASE="https://downloads.immortalwrt.org/releases/23.05.4/packages/${{ matrix.pkg_arch }}/packages"
           for pkg in $(curl -sSL "${OPKG_BASE}/Packages.gz" | zcat | grep -E "Filename: (shadowsocks-rust|shadowsocksr-libev|simple-obfs)" | awk '{print $2}'); do
             echo "正在下载官方核心依赖: $pkg"
             curl -sSL -o "dist/$(basename $pkg)" "${OPKG_BASE}/$pkg" || true
           done
 
-          # 3. 自动注入支持 XHTTP 的最新 Xray-core
+          # 3. 注入支持 XHTTP 的最新 Xray-core
           XRAY_VER=$(curl -sSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
-          echo "最新包含 XHTTP 支持的 Xray 版本为: ${XRAY_VER}"
+          echo "注入 Xray 版本: ${XRAY_VER}"
           mkdir -p xray_pkg/data/usr/bin xray_pkg/control
           curl -sSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${{ matrix.xray_arch }}.zip"
           unzip -q xray.zip -d xray_temp
           cp xray_temp/xray xray_pkg/data/usr/bin/
           chmod 755 xray_pkg/data/usr/bin/xray
 
-          # 打包为标准 xray-core IPK
           cat << EOF > xray_pkg/control/control
 Package: xray-core
 Version: ${XRAY_VER#v}-1

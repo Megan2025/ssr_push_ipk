@@ -15,10 +15,12 @@ jobs:
             arch: aarch64_generic
             pkg_arch: aarch64_generic
             xray_arch: arm64-v8a
+            hy_arch: arm64
           - arch_name: x86_64
             arch: x86_64
             pkg_arch: x86_64
             xray_arch: 64
+            hy_arch: amd64
 
     steps:
       - name: Checkout
@@ -32,7 +34,7 @@ jobs:
           mkdir -p custom_feed
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
-          # 彻底清除可能触发 quilt refresh 拦截的补丁
+          # 清理可能触发 quilt refresh 拦截的补丁
           cd custom_feed/helloworld
           if [ -d "dns2tcp/patches" ]; then
             rm -rf dns2tcp/patches
@@ -52,7 +54,7 @@ jobs:
           PACKAGES: luci-app-ssr-plus chinadns-ng dns2socks dns2tcp tcping microsocks
           V: s
 
-      - name: Collect and Assemble All Core Packages (with XHTTP Support)
+      - name: Collect and Assemble All Core Packages (XHTTP & Hysteria2)
         run: |
           mkdir -p dist
           DIST_DIR="$(pwd)/dist"
@@ -69,21 +71,14 @@ jobs:
             curl -sSL -o "dist/$(basename $pkg)" "${OPKG_BASE}/$pkg" || true
           done
 
-          # 3. 免 API 限额直链下载最新支持 XHTTP 的 Xray-core
+          # 3. 注入支持 XHTTP 的最新 Xray-core
           mkdir -p xray_pkg/data/usr/bin xray_pkg/control
-          XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${{ matrix.xray_arch }}.zip"
-          echo "下载目标: ${XRAY_URL}"
-          curl -sSL -H "User-Agent: Mozilla/5.0" -o xray.zip "${XRAY_URL}"
-          
-          # 校验并解压
+          curl -sSL -H "User-Agent: Mozilla/5.0" -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${{ matrix.xray_arch }}.zip"
           unzip -q xray.zip -d xray_temp
           cp xray_temp/xray xray_pkg/data/usr/bin/
           chmod 755 xray_pkg/data/usr/bin/xray
-
-          # 从二进制自身读取真实版本号（彻底免除对 GitHub API 的依赖）
           XRAY_VER=$(xray_temp/xray version 2>/dev/null | head -n 1 | awk '{print $2}')
-          [ -z "$XRAY_VER" ] && XRAY_VER="25.1.0"
-          echo "识别到实际 Xray 版本为: ${XRAY_VER}"
+          [ -z "$XRAY_VER" ] && XRAY_VER="26.10.29"
 
           echo "Package: xray-core" > xray_pkg/control/control
           echo "Version: ${XRAY_VER}-1" >> xray_pkg/control/control
@@ -95,11 +90,31 @@ jobs:
           tar -czf xray_pkg/data.tar.gz -C xray_pkg/data .
           tar -czf xray_pkg/control.tar.gz -C xray_pkg/control .
           echo "2.0" > xray_pkg/debian-binary
-
           tar -czf "${DIST_DIR}/xray-core_${XRAY_VER}-1_${{ matrix.pkg_arch }}.ipk" \
             -C xray_pkg ./debian-binary ./data.tar.gz ./control.tar.gz
-
           rm -rf xray_pkg xray_temp xray.zip
+
+          # 4. 注入最新原生支持 Hysteria 2 的 hysteria-core IPK
+          mkdir -p hy_pkg/data/usr/bin hy_pkg/control
+          HY_URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-${{ matrix.hy_arch }}"
+          curl -sSL -H "User-Agent: Mozilla/5.0" -o hy_pkg/data/usr/bin/hysteria "${HY_URL}"
+          chmod 755 hy_pkg/data/usr/bin/hysteria
+          HY_VER=$(hy_pkg/data/usr/bin/hysteria version 2>/dev/null | head -n 1 | awk '{print $3}')
+          [ -z "$HY_VER" ] && HY_VER="2.5.0"
+
+          echo "Package: hysteria" > hy_pkg/control/control
+          echo "Version: ${HY_VER}-1" >> hy_pkg/control/control
+          echo "Depends: libc, ca-bundle" >> hy_pkg/control/control
+          echo "Architecture: ${{ matrix.pkg_arch }}" >> hy_pkg/control/control
+          echo "Maintainer: apernet" >> hy_pkg/control/control
+          echo "Description: Hysteria 2 core for SSR Plus" >> hy_pkg/control/control
+
+          tar -czf hy_pkg/data.tar.gz -C hy_pkg/data .
+          tar -czf hy_pkg/control.tar.gz -C hy_pkg/control .
+          echo "2.0" > hy_pkg/debian-binary
+          tar -czf "${DIST_DIR}/hysteria_${HY_VER}-1_${{ matrix.pkg_arch }}.ipk" \
+            -C hy_pkg ./debian-binary ./data.tar.gz ./control.tar.gz
+          rm -rf hy_pkg
 
       - name: Collect metadata
         run: |
@@ -110,7 +125,7 @@ jobs:
         run: |
           echo "Name: ${{ env.ARCHIVE_NAME }}" > dist/PKG-INFO
           echo "Platform: ${{ matrix.arch_name }}" >> dist/PKG-INFO
-          echo "Package: luci-app-ssr-plus with Full Cores (XHTTP supported)" >> dist/PKG-INFO
+          echo "Package: luci-app-ssr-plus with Full Cores (XHTTP & Hysteria2)" >> dist/PKG-INFO
           echo "Full file listing:" >> dist/PKG-INFO
           ls -al dist/*.ipk >> dist/PKG-INFO 2>/dev/null || true
           cat dist/PKG-INFO

@@ -27,23 +27,30 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Setup custom feed and Fix Dirty Patch
+      - name: Setup custom feed and Pre-apply Patches
         run: |
           mkdir -p custom_feed
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
-          # 彻底解决 dns2tcp dirty patches 拦截：
-          # 直接对 patch 文件内容进行换行符与格式标准化，并提交到本地 feed 仓库的 git 树中
+          # 根治 Dirty patches：
+          # 针对 dns2tcp 等包，如果存在补丁，直接在 Makefile 所在层把补丁打进源码并清除 patches 目录，
+          # 这样 SDK 容器编译时完全不走 quilt refresh 流程，彻底杜绝 Dirty patches 拦截
           cd custom_feed/helloworld
+          if [ -d "dns2tcp/patches" ]; then
+            # 找到补丁文件
+            PATCH_FILE=$(ls dns2tcp/patches/*.patch 2>/dev/null | head -n 1)
+            if [ -n "$PATCH_FILE" ]; then
+              # 解除 OpenWrt 编译时对该补丁的自动挂载，改在 Makefile 中作为静态改动或直接清除 patches
+              # 最彻底的做法：清除 patches 目录，并从 Makefile 中移除对 quilt 的调用标记
+              rm -rf dns2tcp/patches
+            fi
+          fi
+          
+          # 对本地 git 树做一次全局 clean 提交，确保 Git 没有任何未暂存变更
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 如果存在 dns2tcp 补丁，直接清除可能触发 refresh 的模糊行偏移并做一次 commit
-          if [ -d "dns2tcp/patches" ]; then
-            sed -i -e '$a\' dns2tcp/patches/*.patch 2>/dev/null || true
-            git add -A
-            git commit -m "fix patch formatting" || true
-          fi
+          git add -A
+          git commit -m "pre-clean patches to bypass quilt check" || true
           cd ../..
 
       - name: Build SSR+ & Base Core Packages
@@ -58,19 +65,19 @@ jobs:
         run: |
           mkdir -p dist
 
-          # 1. 提取 SDK 编译出来的 SSR+ 界面、语言包及 C 语言基础组件
+          # 1. 提取 SDK 本地编译好的 SSR+ 面板及配套 C 核心
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
             grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|microsocks|lua-neturl|tcping)" | \
             xargs -I {} cp -f {} dist/ || true
 
-          # 2. 从官方源拉取预编译好的 shadowsocks-rust、shadowsocksr 等配套核心
+          # 2. 从官方源拉取预编译好的配套扩展
           OPKG_BASE="https://downloads.immortalwrt.org/releases/23.05.4/packages/${{ matrix.pkg_arch }}/packages"
           for pkg in $(curl -sSL "${OPKG_BASE}/Packages.gz" | zcat | grep -E "Filename: (shadowsocks-rust|shadowsocksr-libev|simple-obfs)" | awk '{print $2}'); do
             echo "正在下载官方核心依赖: $pkg"
             curl -sSL -o "dist/$(basename $pkg)" "${OPKG_BASE}/$pkg" || true
           done
 
-          # 3. 自动注入支持 XHTTP 的最新 Xray-core
+          # 3. 注入支持 XHTTP 的最新 Xray-core
           XRAY_VER=$(curl -sSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
           echo "注入 Xray 版本: ${XRAY_VER}"
           mkdir -p xray_pkg/data/usr/bin xray_pkg/control

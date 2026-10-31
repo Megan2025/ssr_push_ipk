@@ -5,14 +5,20 @@ on:
 
 jobs:
   build:
-    name: Test ${{ matrix.arch }}
+    name: Build ${{ matrix.arch_name }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64_cortex-a53
-          - arch: x86_64
+          - arch_name: aarch64_cortex-a53
+            arch: aarch64_generic
+            pkg_arch: aarch64_generic
+            xray_arch: arm64-v8a
+          - arch_name: x86_64
+            arch: x86_64
+            pkg_arch: x86_64
+            xray_arch: 64
 
     steps:
       - name: Checkout
@@ -21,38 +27,69 @@ jobs:
       - name: Setup custom feed for SSR+
         run: |
           mkdir -p custom_feed
-          # 拉取包含 luci-app-ssr-plus 的完整源码
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
-      - name: Build
+      - name: Build SSR+ & Base Core Packages
         uses: immortalwrt/gh-action-sdk@v4.1
         env:
           ARCH: ${{ matrix.arch }}-openwrt-23.05
           FEEDNAME: custom_feed
-          PACKAGES: luci-app-ssr-plus
+          PACKAGES: luci-app-ssr-plus chinadns-ng dns2socks dns2tcp tcping microsocks
           V: s
 
-      - name: Move created packages to clean dist dir
+      - name: Collect and Assemble All Core Packages (with XHTTP Support)
         run: |
           mkdir -p dist
-          # 仅提取 custom_feed/helloworld 产出的核心组件与依赖，排除 -src 源码包与系统底层无用包
+
+          # 1. 提取 SDK 本地编译出的界面与 C 核心
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
-            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|shadowsocks-libev|shadowsocks-rust|simple-obfs|tcping|xray-core|v2ray|trojan|lua-neturl|microsocks)" | \
+            grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|microsocks|lua-neturl|tcping)" | \
             xargs -I {} cp -f {} dist/ || true
+
+          # 2. 从官方软件源同步预编译的 shadowsocks-rust, shadowsocksr, simple-obfs 等配套核心
+          OPKG_BASE="https://downloads.immortalwrt.org/releases/23.05.4/packages/${{ matrix.pkg_arch }}/packages"
+          for pkg in $(curl -sSL "${OPKG_BASE}/Packages.gz" | zcat | grep -E "Filename: (shadowsocks-rust|shadowsocksr-libev|simple-obfs)" | awk '{print $2}'); do
+            echo "正在下载官方核心依赖: $pkg"
+            curl -sSL -o "dist/$(basename $pkg)" "${OPKG_BASE}/$pkg" || true
+          done
+
+          # 3. 自动注入支持 XHTTP 的最新 Xray-core
+          XRAY_VER=$(curl -sSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+          echo "最新包含 XHTTP 支持的 Xray 版本为: ${XRAY_VER}"
+          mkdir -p xray_pkg/data/usr/bin xray_pkg/control
+          curl -sSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${{ matrix.xray_arch }}.zip"
+          unzip -q xray.zip -d xray_temp
+          cp xray_temp/xray xray_pkg/data/usr/bin/
+          chmod 755 xray_pkg/data/usr/bin/xray
+
+          # 打包为标准 xray-core IPK
+          cat << EOF > xray_pkg/control/control
+Package: xray-core
+Version: ${XRAY_VER#v}-1
+Depends: libc, ca-bundle
+Architecture: ${{ matrix.pkg_arch }}
+Maintainer: XTLS
+Description: Xray with native XHTTP support
+EOF
+          (cd xray_pkg/data && tar czf ../data.tar.gz .)
+          (cd xray_pkg/control && tar czf ../control.tar.gz .)
+          echo "2.0" > xray_pkg/debian-binary
+          (cd xray_pkg && tar czf "../../dist/xray-core_${XRAY_VER#v}-1_${{ matrix.pkg_arch }}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz)
+          rm -rf xray_pkg xray_temp xray.zip
 
       - name: Collect metadata
         run: |
           COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
-          echo "ARCHIVE_NAME=${{ matrix.arch }}-$COMMIT_ID" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${{ matrix.arch_name }}-$COMMIT_ID" >> $GITHUB_ENV
 
       - name: Generate metadata
         run: |
           cat << _EOF_ > dist/PKG-INFO
-          Name: ${{ env.ARCHIVE_NAME }}
-          Platform: ${{ matrix.arch }}
-          Package: luci-app-ssr-plus
-          Full file listing:
-          _EOF_
+Name: ${{ env.ARCHIVE_NAME }}
+Platform: ${{ matrix.arch_name }}
+Package: luci-app-ssr-plus with Full Cores (XHTTP supported)
+Full file listing:
+_EOF_
           ls -al dist/*.ipk >> dist/PKG-INFO 2>/dev/null || true
           cat dist/PKG-INFO
 
@@ -60,7 +97,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}-packages
-          # 仅上传 dist 目录下的白名单文件，根目录多余的 200 多个包不会被打包
           path: |
             dist/*.ipk
             dist/PKG-INFO

@@ -65,14 +65,14 @@ jobs:
           cp xray_temp/xray xray_pkg/data/usr/bin/
           chmod 755 xray_pkg/data/usr/bin/xray
 
-          cat << EOF > xray_pkg/control/control
-Package: xray-core
-Version: ${XRAY_VER#v}-1
-Depends: libc, ca-bundle
-Architecture: ${{ matrix.pkg_arch }}
-Maintainer: XTLS
-Description: Xray with native XHTTP support
-EOF
+          # 安全生成 control 文件，避免 EOF 缩进冲突
+          echo "Package: xray-core" > xray_pkg/control/control
+          echo "Version: ${XRAY_VER#v}-1" >> xray_pkg/control/control
+          echo "Depends: libc, ca-bundle" >> xray_pkg/control/control
+          echo "Architecture: ${{ matrix.pkg_arch }}" >> xray_pkg/control/control
+          echo "Maintainer: XTLS" >> xray_pkg/control/control
+          echo "Description: Xray with native XHTTP support" >> xray_pkg/control/control
+
           (cd xray_pkg/data && tar czf ../data.tar.gz .)
           (cd xray_pkg/control && tar czf ../control.tar.gz .)
           echo "2.0" > xray_pkg/debian-binary
@@ -86,12 +86,10 @@ EOF
 
       - name: Generate metadata
         run: |
-          cat << _EOF_ > dist/PKG-INFO
-Name: ${{ env.ARCHIVE_NAME }}
-Platform: ${{ matrix.arch_name }}
-Package: luci-app-ssr-plus with Full Cores (XHTTP supported)
-Full file listing:
-_EOF_
+          echo "Name: ${{ env.ARCHIVE_NAME }}" > dist/PKG-INFO
+          echo "Platform: ${{ matrix.arch_name }}" >> dist/PKG-INFO
+          echo "Package: luci-app-ssr-plus with Full Cores (XHTTP supported)" >> dist/PKG-INFO
+          echo "Full file listing:" >> dist/PKG-INFO
           ls -al dist/*.ipk >> dist/PKG-INFO 2>/dev/null || true
           cat dist/PKG-INFO
 

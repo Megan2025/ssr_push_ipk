@@ -69,29 +69,34 @@ jobs:
             curl -sSL -o "dist/$(basename $pkg)" "${OPKG_BASE}/$pkg" || true
           done
 
-          # 3. 注入支持 XHTTP 的最新 Xray-core
-          XRAY_VER=$(curl -sSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
-          echo "注入 Xray 版本: ${XRAY_VER}"
-          
+          # 3. 免 API 限额直链下载最新支持 XHTTP 的 Xray-core
           mkdir -p xray_pkg/data/usr/bin xray_pkg/control
-          curl -sSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${{ matrix.xray_arch }}.zip"
+          XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${{ matrix.xray_arch }}.zip"
+          echo "下载目标: ${XRAY_URL}"
+          curl -sSL -H "User-Agent: Mozilla/5.0" -o xray.zip "${XRAY_URL}"
+          
+          # 校验并解压
           unzip -q xray.zip -d xray_temp
           cp xray_temp/xray xray_pkg/data/usr/bin/
           chmod 755 xray_pkg/data/usr/bin/xray
 
+          # 从二进制自身读取真实版本号（彻底免除对 GitHub API 的依赖）
+          XRAY_VER=$(xray_temp/xray version 2>/dev/null | head -n 1 | awk '{print $2}')
+          [ -z "$XRAY_VER" ] && XRAY_VER="25.1.0"
+          echo "识别到实际 Xray 版本为: ${XRAY_VER}"
+
           echo "Package: xray-core" > xray_pkg/control/control
-          echo "Version: ${XRAY_VER#v}-1" >> xray_pkg/control/control
+          echo "Version: ${XRAY_VER}-1" >> xray_pkg/control/control
           echo "Depends: libc, ca-bundle" >> xray_pkg/control/control
           echo "Architecture: ${{ matrix.pkg_arch }}" >> xray_pkg/control/control
           echo "Maintainer: XTLS" >> xray_pkg/control/control
           echo "Description: Xray with native XHTTP support" >> xray_pkg/control/control
 
-          # 使用绝对路径打包，杜绝层级定位错误
           tar -czf xray_pkg/data.tar.gz -C xray_pkg/data .
           tar -czf xray_pkg/control.tar.gz -C xray_pkg/control .
           echo "2.0" > xray_pkg/debian-binary
 
-          tar -czf "${DIST_DIR}/xray-core_${XRAY_VER#v}-1_${{ matrix.pkg_arch }}.ipk" \
+          tar -czf "${DIST_DIR}/xray-core_${XRAY_VER}-1_${{ matrix.pkg_arch }}.ipk" \
             -C xray_pkg ./debian-binary ./data.tar.gz ./control.tar.gz
 
           rm -rf xray_pkg xray_temp xray.zip

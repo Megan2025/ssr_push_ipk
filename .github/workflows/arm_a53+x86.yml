@@ -32,21 +32,12 @@ jobs:
           mkdir -p custom_feed
           git clone --depth=1 https://github.com/fw876/helloworld.git custom_feed/helloworld
 
-          # 根治 Dirty patches：
-          # 针对 dns2tcp 等包，如果存在补丁，直接在 Makefile 所在层把补丁打进源码并清除 patches 目录，
-          # 这样 SDK 容器编译时完全不走 quilt refresh 流程，彻底杜绝 Dirty patches 拦截
+          # 彻底清除可能触发 quilt refresh 拦截的补丁
           cd custom_feed/helloworld
           if [ -d "dns2tcp/patches" ]; then
-            # 找到补丁文件
-            PATCH_FILE=$(ls dns2tcp/patches/*.patch 2>/dev/null | head -n 1)
-            if [ -n "$PATCH_FILE" ]; then
-              # 解除 OpenWrt 编译时对该补丁的自动挂载，改在 Makefile 中作为静态改动或直接清除 patches
-              # 最彻底的做法：清除 patches 目录，并从 Makefile 中移除对 quilt 的调用标记
-              rm -rf dns2tcp/patches
-            fi
+            rm -rf dns2tcp/patches
           fi
           
-          # 对本地 git 树做一次全局 clean 提交，确保 Git 没有任何未暂存变更
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
@@ -64,13 +55,14 @@ jobs:
       - name: Collect and Assemble All Core Packages (with XHTTP Support)
         run: |
           mkdir -p dist
+          DIST_DIR="$(pwd)/dist"
 
-          # 1. 提取 SDK 本地编译好的 SSR+ 面板及配套 C 核心
+          # 1. 提取 SDK 本地编译好的 SSR+ 界面、语言包及基础 C 核心
           find bin/packages/ -type f -name "*.ipk" ! -name "*-src_*.ipk" | \
             grep -E "(luci-app-ssr-plus|luci-i18n-ssr-plus|chinadns-ng|dns2socks|dns2tcp|microsocks|lua-neturl|tcping)" | \
             xargs -I {} cp -f {} dist/ || true
 
-          # 2. 从官方源拉取预编译好的配套扩展
+          # 2. 从官方源拉取预编译好的配套核心（SS-Rust, SSR, Obfs 等）
           OPKG_BASE="https://downloads.immortalwrt.org/releases/23.05.4/packages/${{ matrix.pkg_arch }}/packages"
           for pkg in $(curl -sSL "${OPKG_BASE}/Packages.gz" | zcat | grep -E "Filename: (shadowsocks-rust|shadowsocksr-libev|simple-obfs)" | awk '{print $2}'); do
             echo "正在下载官方核心依赖: $pkg"
@@ -80,6 +72,7 @@ jobs:
           # 3. 注入支持 XHTTP 的最新 Xray-core
           XRAY_VER=$(curl -sSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
           echo "注入 Xray 版本: ${XRAY_VER}"
+          
           mkdir -p xray_pkg/data/usr/bin xray_pkg/control
           curl -sSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${{ matrix.xray_arch }}.zip"
           unzip -q xray.zip -d xray_temp
@@ -93,10 +86,14 @@ jobs:
           echo "Maintainer: XTLS" >> xray_pkg/control/control
           echo "Description: Xray with native XHTTP support" >> xray_pkg/control/control
 
-          (cd xray_pkg/data && tar czf ../data.tar.gz .)
-          (cd xray_pkg/control && tar czf ../control.tar.gz .)
+          # 使用绝对路径打包，杜绝层级定位错误
+          tar -czf xray_pkg/data.tar.gz -C xray_pkg/data .
+          tar -czf xray_pkg/control.tar.gz -C xray_pkg/control .
           echo "2.0" > xray_pkg/debian-binary
-          (cd xray_pkg && tar czf "../../dist/xray-core_${XRAY_VER#v}-1_${{ matrix.pkg_arch }}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz)
+
+          tar -czf "${DIST_DIR}/xray-core_${XRAY_VER#v}-1_${{ matrix.pkg_arch }}.ipk" \
+            -C xray_pkg ./debian-binary ./data.tar.gz ./control.tar.gz
+
           rm -rf xray_pkg xray_temp xray.zip
 
       - name: Collect metadata
